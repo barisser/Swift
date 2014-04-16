@@ -13,7 +13,6 @@ from bitcoin import *
 
 b58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 
-master_address='1GgwA7c2ovgWDBoVYsHT5VYXw2QBey1EdF'
 
 subkey_complexity=32
 
