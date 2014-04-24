@@ -8,16 +8,21 @@ import struct
 import requests
 import json
 import math
-import pickle
+import time
 from bitcoin import *
+try:
+   import cPickle as pickle
+except:
+   import pickle
 
 b58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 
+master_address='1GgwA7c2ovgWDBoVYsHT5VYXw2QBey1EdF'
 
 subkey_complexity=32
 
-standard_fee=0.00005
-minincrement=0.01  #min BTC per address (smallest addresses)
+standard_fee=0.0001
+minincrement=0.001  #min BTC per address (smallest addresses)
 increment_base=2
 
 def base58encode(n):
@@ -124,6 +129,7 @@ class subkeypair:
     publicaddress=''
     balance=0
     myuser=''
+    received=False
 
     def __init__(self):
         self.subkey1=os.urandom(subkey_complexity).encode('hex')
@@ -145,20 +151,27 @@ def roundfloat(s, decimals):
 def split_logarithmically(amt,base, min):
     global r,s
     s=amt
-    h=s%min
-    s=s-h
+    
     r=int(math.log(amt/min,base))
     a=[0]*(r+1)
     g=0
     v=0
-    while s>0.000000001:
-        #print s
+    s=int(s/min)
+    min=1
+    h=s%min
+    s=s-h
+    while s>0.00000000:
+        print s
         g=0
         while g<r+1 and s+min/100>=math.pow(base,g)*min:
             a[g]=a[g]+1
             v=v+1
             s=s-math.pow(base,g)*min
             g=g+1
+
+            if s<1 and s>0:
+               s=-1
+         
     #print v
     return a
 
@@ -168,18 +181,24 @@ def split_n(amt,base,min):
     g=0
     v=0
     s=amt
+    s=s/min
+    min=1
     while s>0.000000001:
         g=0
-        #print s
-        while g<r+1 and s+min/100>=float(math.pow(base,g)*min):
+        print s
+        while g<r+1:# and s+min/100>=float(math.pow(base,g)*min):
             a[g]=a[g]+1
             v=v+1
             s=s-float(int(math.pow(base,g)))*min
             g=g+1
+        if s<1 and s>0:
+           s=-1
     return v
 
 def assemble_logarithmically(amt,base,min, storedset):
     s=amt
+    s=s/min
+    min=1
     a=[0]*len(storedset)
     c=[]
     for x in storedset:
@@ -196,6 +215,7 @@ def assemble_logarithmically(amt,base,min, storedset):
             print s
             s=s-math.pow(base,g)*n
         g=g-1
+        
 
     
     return a
@@ -223,61 +243,123 @@ def convert_to_base(x,base):
     return a
 
 class user:
-    name=''
-    totalbalance=0
-    inputaddress=''
-    inputsecretexponent='' #passphrase not yet hashed
-    #outputaddress==''
-    subkeypairs=[]
+   name=''
+   totalbalance=0
+   inputaddress=''
+   inputsecretexponent='' #passphrase not yet hashed
+   outputaddress=''
+   #outputaddress==''
+   subkeypairs=[]
+
+   subkeys=[] #for memory purposes
+    
     
 
-    def __init__(self):
-        self.inputsecretexponent=os.urandom(subkey_complexity).encode('hex')
-        self.inputaddress=generate_publicaddress(self.inputsecretexponent,'')
+   def __init__(self):
+      self.inputsecretexponent=os.urandom(subkey_complexity).encode('hex')
+      self.inputaddress=generate_publicaddress(self.inputsecretexponent,'')
+      self.outputaddress=m #TEMPORARY
 
-    def generate_subaddresses(self, amt):
-        a=0
-        n=split_n(amt,increment_base,minincrement)
-        while a<n:
-            #print a
-            k=subkeypair()
-            #UPLOAD SUBKEY2 TO OUR DATABASE AND BACK UP
-            #k.subkey2=''
-            self.subkeypairs.append(k)
-            a=a+1
+   def generate_subaddresses(self, amt):  #this takes way too long
+      a=0
+      n=split_n(amt,increment_base,minincrement)
+      while a<n:
+         #print a
+         k=subkeypair()
+         h1=k.subkey1
+         h2=k.subkey2
+         self.subkeys.append([h1,h2])
+         #UPLOAD SUBKEY2 TO OUR DATABASE AND BACK UP
+         #k.subkey2=''
+         save()
+         self.subkeypairs.append(k)
+         a=a+1
 
-    def checkinputaddress(self):
-        return check_address(self.inputaddress)
+   def checkinputaddress(self):
+      return check_address(self.inputaddress)
 
-    def check_and_split(self): #splits input address BTC into new subkeypairs, subkeypairs must already exist
-        newsum=float(self.checkinputaddress())/100000000
-        newsum=newsum/(1+split_n(newsum,increment_base,minincrement)*standard_fee)
-        if newsum>0:
-            splitsums=split_logarithmically(newsum,increment_base,minincrement)
-            self.totalbalance=self.totalbalance+newsum
-        else:
-            splitsums=[]
-        a=0
-        while a<len(splitsums):#for each digit in splitsums
-            amt=minincrement*math.pow(increment_base,a)+standard_fee
-            h=0
-            while h<splitsums[a]:#repeat that many times a transaction to a separate addres
-                k=0
-                j=-1
-                while k<len(self.subkeypairs):  #find empty spot in personal subkeypairs list
-                    if self.subkeypairs[k].balance==0:
-                        j=k
-                        k=len(self.subkeypairs)
-                        
-                    k=k+1
-                dest=self.subkeypairs[j].publicaddress
-                
-                send_transaction(self.inputaddress,amt,dest,standard_fee,hashlib.sha256(self.inputsecretexponent).hexdigest())
-                self.subkeypairs[j].balance=amt
+   def check_and_split(self): #splits input address BTC into new subkeypairs, subkeypairs must already exist
+      global dests, outs
+      newsum=float(self.checkinputaddress())/100000000
+      newsum=newsum/(1+split_n(newsum,increment_base,minincrement)*standard_fee)
+      print "detected sum: "+str(newsum)
+      if newsum>0:
+         splitsums=split_logarithmically(newsum,increment_base,minincrement)
+         self.totalbalance=self.totalbalance+newsum
+      else:
+         splitsums=[]
 
-                h=h+1
-                
-            a=a+1
+      a=0
+      outs=[]
+      dests=[]
+      s=0
+      while a<len(splitsums):#for each digit in splitsums
+         amt=minincrement*math.pow(increment_base,a)#   +standard_fee  #dont include standard fee in send_many
+         print str(amt)
+
+         #construct arrays for destinations, outputs
+         h=0
+         while h<splitsums[a]:
+            outputvalue=amt
+            #if h==0:
+            #   outputvalue=outputvalue+standard_fee
+            outs.append(outputvalue)
+
+            try:
+               dest=self.subkeypairs[s].publicaddress
+               self.subkeypairs[s].balance=amt
+               self.subkeypairs[s].received=True
+               dests.append(dest)
+            except:
+               print "insufficient subkeypairs"
+            s=s+1
+               
+            h=h+1
+
+         a=a+1
+      outs[0]=outs[0]+standard_fee
+      send_many(self.inputaddress,outs,dests,standard_fee,0,0,self.inputsecretexponent)
+
+   def redeem(self):  #redeem received subkeypairs to outputwallet
+      global fromaddrs, subkey1s, subkey2s
+      fromaddrs=[]
+      dest=self.outputaddress
+      fee=standard_fee
+      subkey1s=[]
+      subkey2s=[]
+      
+      for x in self.subkeypairs:
+         if x.received==True:
+            fromaddrs.append(x.publicaddress)
+            subkey1s.append(x.subkey1)
+            subkey2s.append(x.subkey2)
+
+            
+      send_from_many(fromaddrs,dest,fee,subkey1s,subkey2s)
+
+            #def send_from_many(fromaddrs,destination,fee, subkey1,subkey2):  #always sends ALL BTC in ALL SOURCE ADDRESSES
+            
+
+   def send_to_output(self,amt):
+      sent=0
+      ok=True
+      h=0
+      while ok:
+         if sent>=amt:
+            ok=False
+         else:
+            if self.subkeypairs[h].balance>0:
+               fromaddr=self.subkeypairs[h].publicaddress
+               if self.subkeypairs[h].balance>amt-sent+standardfee:
+                  fromthisoneamt=amt-sent
+               else:
+                  fromthisoneamt=self.subkeypairs[h].balance
+               subkey1=self.subkeypairs[h].subkey1
+               subkey2=self.subkeypairs[h].subkey2
+               send(fromaddr,fromthisoneamt,self.outputaddress,standard_fee,subkey1,subkey2)
+               self.subkeypairs[h].balance=self.subkeypairs[h].balance-fromthisoneamt-standard_fee
+               sent=sent+fromthisoneamt
+            h=h+1
 
 def isinside(small,big):
     a=len(small)
@@ -309,44 +391,131 @@ def find_vanity(vanity,n):
         a=a+1
 
 def send_transaction(fromaddress,amount,destination, fee, privatekey):
-    try:
-        global ins, outs,h, tx, tx2
-        fee=int(fee*100000000)
-        amount=int(amount*100000000)
-        h=unspent(fromaddress)
-        ins=[]
-        ok=False
-        outs=[]
-        totalfound=0
-        for x in h:
-            if not ok:
-                ins.append(x)
-                if x['value']>=fee+amount-totalfound:
-                    outs.append({'value':amount,'address':destination})
-                    if x['value']>fee+amount-totalfound:
-                        outs.append({'value':x['value']-amount-fee,'address':fromaddress})
-                    ok=True
-                    totalfound=fee+amount
-                else:
-                    outs.append({'value':x['value'],'address':destination})
-                    totalfound=totalfound+x['value']
+    #try:
+      global ins, outs,h, tx, tx2
+      fee=int(fee*100000000)
+      amount=int(amount*100000000)
+      h=unspent(fromaddress)
+      ins=[]
+      ok=False
+      outs=[]
+      totalfound=0
+      for x in h:
+         if not ok:
+               ins.append(x)
+               if x['value']>=fee+amount-totalfound:
+                  outs.append({'value':amount,'address':destination})
+                  if x['value']>fee+amount-totalfound:
+                     outs.append({'value':x['value']-amount-fee,'address':fromaddress})
+                  ok=True
+                  totalfound=fee+amount
+               else:
+                  outs.append({'value':x['value'],'address':destination})
+                  totalfound=totalfound+x['value']
                 
                 
             
         
-        tx=mktx(ins,outs)
-        tx2=sign(tx,0,privatekey)
+      tx=mktx(ins,outs)
+      tx2=sign(tx,0,privatekey)
         #tx3=sign(tx2,1,privatekey)
         
-        pushtx(tx2)
-        print "Sending "+str(amount)+" from "+str(fromaddress)+" to "+str(destination)+" with fee= "+str(fee)+" and secret exponent= "+str(privatekey)
+      pushtx(tx2)
+      print "Sending "+str(amount)+" from "+str(fromaddress)+" to "+str(destination)+" with fee= "+str(fee)+" and secret exponent= "+str(privatekey)
         
         #a='https://blockchain.info/pushtx/'
         #b=requests.get(a+tx3)
         #if b.response_code==200:
         #    print b.content
-    except:
-        print "failed"
+    #except:
+     #   print "failed"
+
+def send_many(fromaddr,outputs,destinations,fee, subkey1,subkey2, secretexponent):
+   global outs,inp, tx, tx2,totalin,b,amounts, totalout
+   amounts=[]
+   outs=[]
+   ins=[]
+   totalout=0
+   fee=int(fee*100000000)
+   #feeouts=[]
+   for x in outputs:
+      amounts.append(int(x*100000000))
+      totalout=totalout+int(x*100000000)
+   #x in fees:
+      #feeouts.append(int(x*100000000))
+   inp=unspent(fromaddr)
+   totalin=0
+   for x in inp:
+      totalin=totalin+x['value']
+   ins=inp
+
+   a=0
+   b=0
+   while a<len(amounts):
+      amt=amounts[a]#+feeouts[a]  #in satoshi
+      dest=destinations[a]
+      b=b+amt
+      outs.append({'value':amt,'address':dest})
+      a=a+1
+
+   unspentbtc=totalin-b-fee
+   if unspentbtc>0:
+      outs.append({'value':unspentbtc,'address':fromaddr})
+
+   if secretexponent<=0:
+      priv=hashlib.sha256(subkey1+subkey2).hexdigest()
+   else:
+      priv=hashlib.sha256(secretexponent).hexdigest()
+
+   tx=mktx(ins,outs)
+   p=0
+   tx2=tx
+   for x in inp:
+      tx2=sign(tx2,p,priv)
+      p=p+1
+   #tx2=sign(tx,0,priv)
+   pushtx(tx2)
+      
+   
+def send_from_many(fromaddrs,destination,fee, subkey1,subkey2):  #always sends ALL BTC in ALL SOURCE ADDRESSES
+   #fromaddrs and subkey1 and subkey2 need to be arrays of addresses and subkeys
+      
+   global inps, tx, tx2, outs,r
+
+   #make inputs
+   privorder=[]
+   inps=[]
+   totalin=0
+   for x in fromaddrs:
+      r=unspent(x)
+      privorder.append(len(r)) # number of inputs from each input address
+      inps=inps+r
+      for y in r:
+            totalin=totalin+y['value']
+         
+
+   #make output
+   sfee=int(fee*100000000)
+   outs=[]
+   amt=totalin-sfee
+   outs.append({'value':amt,'address':destination})
+
+   #send tx
+   tx=mktx(inps,outs)
+   tx2=tx
+   g=0
+   j=0
+   while g<len(subkey1):
+      for t in range(0,privorder[g]):
+         sk1=subkey1[g]
+         sk2=subkey2[g]
+         priv=hashlib.sha256(sk1+sk2).hexdigest()
+         tx2=sign(tx2,j,priv)
+         j=j+1
+      g=g+1
+   pushtx(tx2)
+   
+   
 
 def send(fromaddr, amt, destination, fee, subkey1, subkey2):
     pk=hashlib.sha256(subkey1+subkey2).hexdigest()
@@ -364,17 +533,85 @@ def add_user():
     return k
 
 def load_user_db():
-    global users
-    filename='users.data'
-    try:
-        users=pickle.load(open(filename,'rb'))
-        print str(len(users))+" users loaded"
-    except:
-        print "failed loading"
+   global users
+   filename='users.data'
+    
+   f=open(filename)
+   users=[]
+   ok=True
+   while ok:
+      inputaddress=f.readline().strip()
+      if inputaddress=='END':
+         ok=False
+      else:
+         inputsecretexponent=f.readline().strip()
+         try:
+            nsubkeypairs=int(f.readline().strip())
+         except:
+            print "failed reading file"
+         r=user()
+         #r.append(inputaddress)
+         r.inputaddress=inputaddress
+         r.inputsecretexponent=inputsecretexponent
+         for i in range(0,nsubkeypairs):
+            subkey1=f.readline().strip()
+            subkey2=f.readline().strip()
+            referenceid=f.readline().strip()
+            publicaddress=f.readline().strip()
+            balance=f.readline().strip()
+            received=f.readline().strip()
+            g=subkeypair()
+            g.subkey1=subkey1
+            g.subkey2=subkey2
+            g.referenceid=referenceid
+            g.publicaddress=publicaddress
+            g.balance=balance
+
+            if received==True:
+               g.received=True
+            else:
+               g.received=False
+            
+            r.subkeypairs.append(g)
+         #r.append(inputsecretexponent)
+         #r.append(nsubkeypairs)
+         users.append(r)
+      
+
+
 
 def save():
-    filename='users.data'
-    pickle.dumps(users,open('users.data','wb'))
+   filename='users.data'
+   #pickle.dump(users,open('users.data','wb'))
+   f=open(filename,'wb')
+   for x in users:
+      f.write(x.inputaddress)
+      f.write('\r\n')
+      f.write(x.inputsecretexponent)
+      f.write('\r\n')
+      f.write(str(len(x.subkeypairs)))
+      f.write('\r\n')
+      if len(x.subkeypairs)>0:
+         for y in x.subkeypairs:
+            f.write(str(y.subkey1))
+            f.write('\r\n')
+            f.write(str(y.subkey2))
+            f.write('\r\n')
+            f.write(str(y.referenceid))
+            f.write('\r\n')
+            f.write(str(y.publicaddress))
+            f.write('\r\n')
+            f.write(str(y.balance))
+            f.write('\r\n')
+            if y.received==True:
+               f.write('received')
+            else:
+               f.write('not received')
+            f.write('\r\n')
 
+   f.write('END')
+
+
+
+m='1GgwA7c2ovgWDBoVYsHT5VYXw2QBey1EdF'      
 load_user_db()
-
